@@ -60,19 +60,6 @@ To run the emotion detection on your webcam:
 python main.py
 ```
 
-To process a video file:
-
-```bash
-python main.py --video path/to/your/video.mp4
-```
-
-### Command Line Arguments
-
-- `--video`: Path to input video file (optional, defaults to webcam)
-- `--model`: Path to the emotion detection model (default: models/emotion_model.hdf5)
-- `--cascade`: Path to the Haar Cascade classifier (default: models/haarcascade_frontalface_default.xml)
-- `--output`: Path to save the output video (optional)
-
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
