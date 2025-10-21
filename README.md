@@ -14,7 +14,6 @@ This project is a Python script that uses OpenCV and a pre-trained emotion detec
   - [Windows/Linux/macOS](#windowslinuxmacos)
 - [Usage](#usage)
   - [Basic Usage](#basic-usage)
-  - [Command Line Arguments](#command-line-arguments)
 - [License](#license)
 - [Contact](#contact)
 
