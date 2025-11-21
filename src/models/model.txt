@@ -1,0 +1,23 @@
+# Model Documentation
+
+## Input Data
+- The model receives grayscale face images of size 48x48 pixels, typically extracted from webcam or video frames.
+- Images are expected to contain a single face per frame for best results.
+
+## Preprocessing
+- Face detection is performed using OpenCV's Haar Cascade (`models/haarcascade_frontalface_default.xml`) to crop the face region from the input image.
+- The face region is resized to 48x48 pixels and normalized (pixel values scaled to [0, 1] or [-1, 1]).
+- Optionally, data augmentation (rotation, flipping, brightness, contrast, etc.) can be applied during training to improve generalization.
+
+## Model Architecture
+- The emotion recognition model (`models/emotion_model.hdf5`) is a Convolutional Neural Network (CNN) trained on the FER2013 dataset.
+- It consists of multiple convolutional, batch normalization, pooling, dropout, and dense layers.
+- The model is designed to classify facial expressions into 7 categories: angry, disgust, fear, happy, sad, surprise, neutral.
+
+## Model Files
+- `models/emotion_model.hdf5`: Keras/TensorFlow model file for emotion classification. Takes a preprocessed 48x48 grayscale face image and outputs probabilities for each emotion class.
+- `models/haarcascade_frontalface_default.xml`: OpenCV Haar Cascade classifier used to detect and localize faces in input images before feeding them to the emotion model.
+
+## Model Output
+- The output is a probability vector of length 7, representing the likelihood of each emotion class (angry, disgust, fear, happy, sad, surprise, neutral).
+- The class with the highest probability is selected as the predicted emotion for the detected face.

@@ -220,3 +220,12 @@ Icon
 Network Trash Folder
 Temporary Items
 .apdisk
+
+
+src/utils/custom_dataset/angry/*
+src/utils/custom_dataset/disgust/*
+src/utils/custom_dataset/fear/*
+src/utils/custom_dataset/happy/*
+src/utils/custom_dataset/neutral/*
+src/utils/custom_dataset/sad/*
+src/utils/custom_dataset/surprise/*
