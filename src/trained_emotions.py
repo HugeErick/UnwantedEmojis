@@ -28,12 +28,12 @@ except ImportError as e:
 
 MODEL_PATH = "./src/models/emotion_model.hdf5"
 FINETUNED_MODEL_PATH = "./src/models/emotion_model_finetuned.keras"
-TARGET_IMAGES_PER_CLASS = 3000
+TARGET_IMAGES_PER_CLASS = 5000
 
 # Emotion labels matching your folder structure
 EMOTIONS = ["angry", "disgust", "fear", "happy", "neutral", "sad", "surprise"]
 
-def _pick_n(sequence, n=3000, rng=np.random.default_rng()):
+def _pick_n(sequence, n=TARGET_IMAGES_PER_CLASS, rng=np.random.default_rng()):
     """Return *n* random items from *sequence* without replacement."""
     if len(sequence) <= n:
         return sequence[:]
@@ -153,55 +153,13 @@ def convert_grayscale_to_rgb(images):
     rgb_images = np.repeat(images, 3, axis=-1)
     return rgb_images
 
-def augment_batch(images):
-    """Manual augmentation without ImageDataGenerator (Python 3.13 compatible)"""
-    augmented = []
-    for img in images:
-        # Random horizontal flip
-        if np.random.random() > 0.5:
-            img = np.fliplr(img)
-        
-        # Random rotation (small angle)
-        if np.random.random() > 0.5:
-            angle = np.random.uniform(-20, 20)
-            h, w = img.shape[:2]
-            M = cv2.getRotationMatrix2D((w/2, h/2), angle, 1.0)
-            img = cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REFLECT)
-        
-        # Random zoom
-        if np.random.random() > 0.5:
-            zoom = np.random.uniform(0.8, 1.2)
-            h, w = img.shape[:2]
-            new_h, new_w = int(h * zoom), int(w * zoom)
-            img_resized = cv2.resize(img, (new_w, new_h))
-            
-            if zoom > 1.0:  # Crop
-                start_h = (new_h - h) // 2
-                start_w = (new_w - w) // 2
-                img = img_resized[start_h:start_h+h, start_w:start_w+w]
-            else:  # Pad
-                pad_h = (h - new_h) // 2
-                pad_w = (w - new_w) // 2
-                img = cv2.copyMakeBorder(img_resized, pad_h, h-new_h-pad_h, 
-                                        pad_w, w-new_w-pad_w, cv2.BORDER_REFLECT)
-        
-        # Random brightness
-        if np.random.random() > 0.5:
-            brightness = np.random.uniform(0.8, 1.2)
-            img = np.clip(img * brightness, 0, 255).astype(np.uint8)
-        
-        augmented.append(img)
-    
-    return np.array(augmented)
-
 
 class DataGenerator(Sequence):
     """Custom data generator compatible with Python 3.13"""
-    def __init__(self, x, y, batch_size, augment=True, shuffle=True):
+    def __init__(self, x, y, batch_size, shuffle=True):
         self.x = x
         self.y = y
         self.batch_size = batch_size
-        self.augment = augment
         self.shuffle = shuffle
         self.indices = np.arange(len(x))
         self.on_epoch_end()
@@ -217,10 +175,7 @@ class DataGenerator(Sequence):
         batch_x = self.x[batch_indices].copy()
         batch_y = self.y[batch_indices]
         
-        if self.augment:
-            batch_x = augment_batch(batch_x)
-        
-        # Normalize
+        # Normalize only - no augmentation
         batch_x = batch_x.astype('float32') / 255.0
         
         return batch_x, batch_y
@@ -287,6 +242,7 @@ def train_transfer_learning_model():
     print("GPU-ACCELERATED TRANSFER LEARNING")
     print("=" * 70)
     print("Training with custom data generator (Python 3.13 compatible)")
+    print("No augmentation - using pre-augmented dataset")
     print("Expected accuracy: 80-85%")
     print("=" * 70 + "\n")
 
@@ -346,9 +302,9 @@ def train_transfer_learning_model():
     y_train_cat = to_categorical(y_train, num_classes)
     y_val_cat = to_categorical(y_val, num_classes)
 
-    # Create generators (Python 3.13 compatible)
-    train_gen = DataGenerator(x_train, y_train_cat, BATCH_SIZE, augment=True)
-    val_gen = DataGenerator(x_val, y_val_cat, BATCH_SIZE, augment=False, shuffle=False)
+    # Create generators (Python 3.13 compatible) - NO AUGMENTATION
+    train_gen = DataGenerator(x_train, y_train_cat, BATCH_SIZE, shuffle=True)
+    val_gen = DataGenerator(x_val, y_val_cat, BATCH_SIZE, shuffle=False)
 
     # Create model
     model, base_model = create_transfer_learning_model(
@@ -481,6 +437,7 @@ def main():
     print("=" * 70)
     print("\nUsing EfficientNetB0 pre-trained on ImageNet")
     print("GPU-accelerated training (if available)")
+    print("No augmentation - dataset already augmented")
     print("Expected accuracy: 80-85%")
     print("=" * 70 + "\n")
     

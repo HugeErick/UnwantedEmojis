@@ -15,7 +15,7 @@ from tqdm import tqdm
 # Configuration
 DOWNLOADS_DATASET = Path.home() / "downloads" / "i"
 TARGET_DATASET = Path.home() / "devNest" / "UnwantedEmojis" / "src" / "utils" / "custom_dataset"
-TARGET_IMAGES_PER_CLASS = 3000
+TARGET_IMAGES_PER_CLASS = 5000
 IMAGE_SIZE = (64, 64)
 
 EMOTIONS = ["angry", "disgust", "fear", "happy", "neutral", "sad", "surprise"]
