@@ -1,95 +1,32 @@
 import os
-os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices=false'
-os.environ['XLA_FLAGS'] = '--xla_gpu_cuda_data_dir=/dev/null'
-os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
-# Disable JIT compilation entirely
-os.environ['TF_DISABLE_JIT'] = '1'
-from keras.models import Model
-from keras.utils import Sequence
-from keras.applications import EfficientNetB0
-from keras.layers import GlobalAveragePooling2D, Dense, Dropout, Input, BatchNormalization
-from keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
-from keras.optimizers import Adam
-from utils.preprocessor import to_categorical
+# os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 import numpy as np
 import cv2
 from pathlib import Path
+from keras.models import Model
+from keras.layers import Input, Conv2D, MaxPooling2D, Flatten, Dense, Dropout, BatchNormalization, Activation
+from keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
+from keras.optimizers import Adam
+from keras.utils import to_categorical, Sequence
+import random
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
+import json
+from datetime import datetime
 
-# Import dependencies for URL loading
-try:
-    import pandas as pd
-    import requests
-    from io import BytesIO
-    from PIL import Image
-    URL_SUPPORT = True
-except ImportError as e:
-    URL_SUPPORT = False
-    MISSING_DEPS = str(e)
-
-MODEL_PATH = "./src/models/emotion_model.hdf5"
-FINETUNED_MODEL_PATH = "./src/models/emotion_model_finetuned.keras"
-TARGET_IMAGES_PER_CLASS = 5000
-
-# Emotion labels matching your folder structure
+# Configuration
+TARGET_IMAGES_PER_CLASS = 5200
+IMAGE_SIZE = (128, 128)  # This is the image size 
+BATCH_SIZE = 16
 EMOTIONS = ["angry", "disgust", "fear", "happy", "neutral", "sad", "surprise"]
 
 def _pick_n(sequence, n=TARGET_IMAGES_PER_CLASS, rng=np.random.default_rng()):
-    """Return *n* random items from *sequence* without replacement."""
+    """Return n random items from sequence without replacement."""
     if len(sequence) <= n:
         return sequence[:]
     indices = rng.choice(len(sequence), size=n, replace=False)
     return [sequence[i] for i in indices]
-
-def load_image_from_url(url, timeout=10):
-    """Download and load image from URL"""
-    if not URL_SUPPORT:
-        return None
-        
-    try:
-        response = requests.get(url, timeout=timeout)
-        response.raise_for_status()
-        img_pil = Image.open(BytesIO(response.content))
-        if img_pil.mode != 'L':
-            img_pil = img_pil.convert('L')
-        img = np.array(img_pil)
-        return img
-    except Exception as e:
-        print(f"  Error loading URL: {e}")
-        return None
-
-def load_images_from_csv(csv_path, image_size):
-    """Load images from URLs in a CSV file"""
-    images = []
-    
-    if not URL_SUPPORT:
-        print(f"  Warning: URL support not available. Missing dependencies: {MISSING_DEPS}")
-        print("  Install with: pip install pandas pillow requests")
-        return images
-    
-    try:
-        df = pd.read_csv(csv_path)
-        if 'url' not in df.columns:
-            print(f"  Warning: 'url' column not found in {csv_path.name}")
-            return images
-        
-        urls = df['url'].dropna().tolist()
-        print(f"  Found {len(urls)} URLs in CSV")
-        
-        for idx, url in enumerate(urls, 1):
-            if pd.isna(url) or not str(url).strip():
-                continue
-            img = load_image_from_url(str(url).strip())
-            if img is not None:
-                img = cv2.resize(img, image_size)
-                images.append(img)
-                if idx % 10 == 0:
-                    print(f"    Loaded {idx}/{len(urls)} images...")
-        
-        print(f"  Successfully loaded {len(images)} images from URLs")
-    except Exception as e:
-        print(f"  Error reading CSV: {e}")
-    
-    return images
 
 def load_custom_dataset(dataset_path="./src/utils/custom_dataset", image_size=(64, 64)):
     """Load images from custom dataset folder structure"""
@@ -105,20 +42,10 @@ def load_custom_dataset(dataset_path="./src/utils/custom_dataset", image_size=(6
         emotion_folder = dataset_path / emotion
 
         if not emotion_folder.exists():
-            print(f"Warning: Folder '{emotion}' not found, must have images in order to train properly")
+            print(f"Warning: Folder '{emotion}' not found")
             continue
 
-        emotion_images = []
-        
-        # Method 1: Check for CSV file(s) with URLs
-        csv_files = list(emotion_folder.glob("*.csv"))
-        if csv_files:
-            for csv_file in csv_files:
-                print(f"Loading from CSV: '{emotion}/{csv_file.name}'")
-                csv_images = load_images_from_csv(csv_file, image_size)
-                emotion_images.extend(csv_images)
-        
-        # Method 2: Load local image files
+        # Load local image files
         image_extensions = ["*.jpg", "*.jpeg", "*.png", "*.avif", "*.bmp", "*.webp"]
         image_files = []
         for ext in image_extensions:
@@ -126,7 +53,8 @@ def load_custom_dataset(dataset_path="./src/utils/custom_dataset", image_size=(6
             image_files.extend(list(emotion_folder.glob(ext.upper())))
         
         if image_files:
-            print(f"Loading {len(image_files)} local images from '{emotion}' folder...")
+            print(f"Loading {len(image_files)} images from '{emotion}' folder...")
+            emotion_images = []
             for img_file in image_files:
                 try:
                     img = cv2.imread(str(img_file), cv2.IMREAD_GRAYSCALE)
@@ -134,33 +62,27 @@ def load_custom_dataset(dataset_path="./src/utils/custom_dataset", image_size=(6
                         img = cv2.resize(img, image_size)
                         emotion_images.append(img)
                 except Exception as e:
-                    print(f"  Error loading {img_file.name}: {e}")
-        
-        emotion_images = _pick_n(emotion_images, n=TARGET_IMAGES_PER_CLASS)
-        images.extend(emotion_images)
-        labels.extend([emotion_idx] * len(emotion_images))
-        print(f"Total for '{emotion}': {len(emotion_images)} images\n")
+                    pass
+            
+            emotion_images = _pick_n(emotion_images, n=TARGET_IMAGES_PER_CLASS)
+            images.extend(emotion_images)
+            labels.extend([emotion_idx] * len(emotion_images))
+            print(f"Total for '{emotion}': {len(emotion_images)} images\n")
 
     if len(images) == 0:
-        raise ValueError("No images found! Please add images to the custom_dataset folders or create images.csv files with URLs.")
+        raise ValueError("No images found!")
 
     return np.array(images), np.array(labels)
 
-def convert_grayscale_to_rgb(images):
-    """Convert grayscale images to RGB by replicating channels"""
-    if len(images.shape) == 3:
-        images = np.expand_dims(images, -1)
-    rgb_images = np.repeat(images, 3, axis=-1)
-    return rgb_images
 
-
-class DataGenerator(Sequence):
-    """Custom data generator compatible with Python 3.13"""
-    def __init__(self, x, y, batch_size, shuffle=True):
+class AugmentedDataGenerator(Sequence):
+    """Data generator with strong augmentation"""
+    def __init__(self, x, y, batch_size, shuffle=True, augment=True):
         self.x = x
         self.y = y
         self.batch_size = batch_size
         self.shuffle = shuffle
+        self.augment = augment
         self.indices = np.arange(len(x))
         self.on_epoch_end()
     
@@ -175,273 +97,493 @@ class DataGenerator(Sequence):
         batch_x = self.x[batch_indices].copy()
         batch_y = self.y[batch_indices]
         
-        # Normalize only - no augmentation
+        if self.augment:
+            batch_x = self._augment_batch(batch_x)
+        
+        # Normalize to [0, 1]
         batch_x = batch_x.astype('float32') / 255.0
         
+        # Add channel dimension
+        if len(batch_x.shape) == 3:
+            batch_x = np.expand_dims(batch_x, -1)
+        
         return batch_x, batch_y
+    
+    def _augment_batch(self, batch):
+        """Apply aggressive augmentation"""
+        augmented = []
+        for img in batch:
+            # Random horizontal flip
+            if random.random() > 0.5:
+                img = np.fliplr(img)
+            
+            # Random brightness (±30%)
+            brightness = random.uniform(0.7, 1.3)
+            img = np.clip(img * brightness, 0, 255)
+            
+            # Random contrast
+            alpha = random.uniform(0.8, 1.2)
+            img = np.clip(128 + alpha * (img - 128), 0, 255)
+            
+            # Random rotation (-20 to +20 degrees)
+            angle = random.uniform(-20, 20)
+            h, w = img.shape[:2]
+            M = cv2.getRotationMatrix2D((w/2, h/2), angle, 1.0)
+            img = cv2.warpAffine(img, M, (w, h), borderValue=128)
+            
+            # Random shift
+            shift_x = random.randint(-5, 5)
+            shift_y = random.randint(-5, 5)
+            M = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
+            img = cv2.warpAffine(img, M, (w, h), borderValue=128)
+            
+            # Random zoom
+            if random.random() > 0.7:
+                zoom = random.uniform(0.9, 1.1)
+                h, w = img.shape[:2]
+                M = cv2.getRotationMatrix2D((w/2, h/2), 0, zoom)
+                img = cv2.warpAffine(img, M, (w, h), borderValue=128)
+            
+            augmented.append(img)
+        
+        return np.array(augmented)
     
     def on_epoch_end(self):
         if self.shuffle:
             np.random.shuffle(self.indices)
 
-def create_transfer_learning_model(input_shape=(96, 96, 3), num_classes=7):
-    """Create model using EfficientNetB0 with transfer learning"""
-    print("\nCreating Transfer Learning Model (EfficientNetB0)...")
+
+def create_custom_cnn(input_shape=(64, 64, 1), num_classes=7):
+    """
+    Create a custom CNN optimized for emotion detection.
+    """
+    print("\nCreating Custom CNN Model...")
     
-    # Ensure we're using the correct backend settings for RGB
-    import keras.backend as K
-    if hasattr(K, 'set_image_data_format'):
-        K.set_image_data_format('channels_last')
+    inputs = Input(shape=input_shape)
     
-    # Create base model
-    try:
-        base_model = EfficientNetB0(
-            include_top=False,
-            weights='imagenet',
-            input_shape=(96, 96, 3),
-            pooling=None
-        )
-        print(f"  Base model loaded: EfficientNetB0 ({len(base_model.layers)} layers)")
-    except Exception as e:
-        print(f"  Error loading pretrained weights: {e}")
-        print("  Attempting to load without pretrained weights...")
-        base_model = EfficientNetB0(
-            include_top=False,
-            weights=None,
-            input_shape=(96, 96, 3),
-            pooling=None
-        )
-        print("  WARNING: Using EfficientNetB0 without ImageNet weights!")
-        print("  Training may take longer and accuracy may be lower.")
+    # Block 1
+    x = Conv2D(64, (3, 3), padding='same', kernel_initializer='he_normal')(inputs)
+    x = BatchNormalization()(x)
+    x = Activation('relu')(x)
+    x = Conv2D(64, (3, 3), padding='same', kernel_initializer='he_normal')(x)
+    x = BatchNormalization()(x)
+    x = Activation('relu')(x)
+    x = MaxPooling2D((2, 2))(x)
+    x = Dropout(0.25)(x)
     
-    base_model.trainable = False
-    print("  Base model frozen for Phase 1 training")
+    # Block 2
+    x = Conv2D(128, (3, 3), padding='same', kernel_initializer='he_normal')(x)
+    x = BatchNormalization()(x)
+    x = Activation('relu')(x)
+    x = Conv2D(128, (3, 3), padding='same', kernel_initializer='he_normal')(x)
+    x = BatchNormalization()(x)
+    x = Activation('relu')(x)
+    x = MaxPooling2D((2, 2))(x)
+    x = Dropout(0.25)(x)
     
-    inputs = Input(shape=(96, 96, 3))
-    x = base_model(inputs, training=False)
-    x = GlobalAveragePooling2D(name='global_avg_pool')(x)
-    x = BatchNormalization(name='bn_1')(x)
-    x = Dense(256, activation='relu', name='dense_1')(x)
-    x = Dropout(0.5, name='dropout_1')(x)
-    x = BatchNormalization(name='bn_2')(x)
-    x = Dense(128, activation='relu', name='dense_2')(x)
-    x = Dropout(0.3, name='dropout_2')(x)
-    outputs = Dense(num_classes, activation='softmax', name='output')(x)
+    # Block 3
+    x = Conv2D(256, (3, 3), padding='same', kernel_initializer='he_normal')(x)
+    x = BatchNormalization()(x)
+    x = Activation('relu')(x)
+    x = Conv2D(256, (3, 3), padding='same', kernel_initializer='he_normal')(x)
+    x = BatchNormalization()(x)
+    x = Activation('relu')(x)
+    x = MaxPooling2D((2, 2))(x)
+    x = Dropout(0.25)(x)
+    
+    # Block 4
+    x = Conv2D(512, (3, 3), padding='same', kernel_initializer='he_normal')(x)
+    x = BatchNormalization()(x)
+    x = Activation('relu')(x)
+    x = Conv2D(512, (3, 3), padding='same', kernel_initializer='he_normal')(x)
+    x = BatchNormalization()(x)
+    x = Activation('relu')(x)
+    x = MaxPooling2D((2, 2))(x)
+    x = Dropout(0.25)(x)
+    
+    # Classifier
+    x = Flatten()(x)
+    x = Dense(512, kernel_initializer='he_normal')(x)
+    x = BatchNormalization()(x)
+    x = Activation('relu')(x)
+    x = Dropout(0.5)(x)
+    
+    x = Dense(256, kernel_initializer='he_normal')(x)
+    x = BatchNormalization()(x)
+    x = Activation('relu')(x)
+    x = Dropout(0.5)(x)
+    
+    outputs = Dense(num_classes, activation='softmax')(x)
     
     model = Model(inputs=inputs, outputs=outputs)
-    print(f"  Model created with {model.count_params():,} parameters\n")
+    print(f"Model created with {model.count_params():,} parameters")
     
-    return model, base_model
+    return model
 
-def train_transfer_learning_model():
-    """Train new transfer learning model (Python 3.13 compatible)"""
-    BATCH_SIZE = 16
-    IMAGE_SIZE = (96, 96)
+
+def plot_training_history(history, save_path='./training_results'):
+    """Plot training and validation metrics"""
+    Path(save_path).mkdir(parents=True, exist_ok=True)
     
-    print("=" * 70)
-    print("GPU-ACCELERATED TRANSFER LEARNING")
-    print("=" * 70)
-    print("Training with custom data generator (Python 3.13 compatible)")
-    print("No augmentation - using pre-augmented dataset")
-    print("Expected accuracy: 80-85%")
-    print("=" * 70 + "\n")
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    
+    # Accuracy plot
+    axes[0].plot(history.history['accuracy'], label='Training Accuracy', linewidth=2)
+    axes[0].plot(history.history['val_accuracy'], label='Validation Accuracy', linewidth=2)
+    axes[0].set_title('Model Accuracy Over Epochs', fontsize=14, fontweight='bold')
+    axes[0].set_xlabel('Epoch', fontsize=12)
+    axes[0].set_ylabel('Accuracy', fontsize=12)
+    axes[0].legend(loc='lower right')
+    axes[0].grid(True, alpha=0.3)
+    
+    # Loss plot
+    axes[1].plot(history.history['loss'], label='Training Loss', linewidth=2)
+    axes[1].plot(history.history['val_loss'], label='Validation Loss', linewidth=2)
+    axes[1].set_title('Model Loss Over Epochs', fontsize=14, fontweight='bold')
+    axes[1].set_xlabel('Epoch', fontsize=12)
+    axes[1].set_ylabel('Loss', fontsize=12)
+    axes[1].legend(loc='upper right')
+    axes[1].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(f'{save_path}/training_history.png', dpi=300, bbox_inches='tight')
+    print(f"Saved training history plot to {save_path}/training_history.png")
+    plt.close()
 
-    try:
-        import tensorflow as tf
-        gpus = tf.config.list_physical_devices('GPU')
-        if gpus:
-            print(f"✓ Using GPU: {gpus[0].name}")
-            print("  GPU Memory: ~3.5GB available\n")
-        else:
-            print("⚠️  No GPU detected, using CPU\n")
-    except ImportError:
-        print("❌ TensorFlow not installed\n")
-    except Exception as e:
-        print(f"❌ Error checking GPU: {e}\n")
 
+def plot_confusion_matrix(y_true, y_pred, save_path='./training_results'):
+    """Plot confusion matrix"""
+    Path(save_path).mkdir(parents=True, exist_ok=True)
+    
+    cm = confusion_matrix(y_true, y_pred)
+    
+    # Calculate percentages
+    cm_percent = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis] * 100
+    
+    fig, ax = plt.subplots(figsize=(12, 10))
+    
+    # Create heatmap
+    sns.heatmap(cm_percent, annot=True, fmt='.1f', cmap='Blues', 
+                xticklabels=EMOTIONS, yticklabels=EMOTIONS,
+                cbar_kws={'label': 'Percentage (%)'}, ax=ax)
+    
+    ax.set_title('Confusion Matrix (%)', fontsize=16, fontweight='bold', pad=20)
+    ax.set_ylabel('True Label', fontsize=13, fontweight='bold')
+    ax.set_xlabel('Predicted Label', fontsize=13, fontweight='bold')
+    
+    # Add counts in cells
+    for i in range(len(EMOTIONS)):
+        for j in range(len(EMOTIONS)):
+            text = ax.text(j + 0.5, i + 0.7, f'n={cm[i, j]}',
+                          ha="center", va="center", color="gray", fontsize=8)
+    
+    plt.tight_layout()
+    plt.savefig(f'{save_path}/confusion_matrix.png', dpi=300, bbox_inches='tight')
+    print(f"Saved confusion matrix to {save_path}/confusion_matrix.png")
+    plt.close()
+    
+    return cm
+
+
+def plot_per_class_metrics(y_true, y_pred, save_path='./training_results'):
+    """Plot per-class precision, recall, and F1-score"""
+    Path(save_path).mkdir(parents=True, exist_ok=True)
+    
+    precision, recall, f1, support = precision_recall_fscore_support(
+        y_true, y_pred, labels=range(len(EMOTIONS))
+    )
+    
+    x = np.arange(len(EMOTIONS))
+    width = 0.25
+    
+    fig, ax = plt.subplots(figsize=(14, 6))
+    
+    bars1 = ax.bar(x - width, precision, width, label='Precision', color='#3498db')
+    bars2 = ax.bar(x, recall, width, label='Recall', color='#2ecc71')
+    bars3 = ax.bar(x + width, f1, width, label='F1-Score', color='#e74c3c')
+    
+    ax.set_ylabel('Score', fontsize=12, fontweight='bold')
+    ax.set_xlabel('Emotion', fontsize=12, fontweight='bold')
+    ax.set_title('Per-Class Performance Metrics', fontsize=14, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels(EMOTIONS, rotation=45, ha='right')
+    ax.legend()
+    ax.grid(True, alpha=0.3, axis='y')
+    ax.set_ylim([0, 1.1])
+    
+    # Add value labels on bars
+    for bars in [bars1, bars2, bars3]:
+        for bar in bars:
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height,
+                   f'{height:.2f}',
+                   ha='center', va='bottom', fontsize=8)
+    
+    plt.tight_layout()
+    plt.savefig(f'{save_path}/per_class_metrics.png', dpi=300, bbox_inches='tight')
+    print(f"Saved per-class metrics to {save_path}/per_class_metrics.png")
+    plt.close()
+    
+    return precision, recall, f1, support
+
+
+def save_metrics_report(history, y_true, y_pred, cm, precision, recall, f1, support, 
+                       training_time, save_path='./training_results'):
+    """Save comprehensive metrics report"""
+    Path(save_path).mkdir(parents=True, exist_ok=True)
+    
+    # Calculate overall metrics
+    accuracy = np.mean(y_true == y_pred)
+    
+    # Create detailed report
+    report = {
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'training_configuration': {
+            'image_size': IMAGE_SIZE,
+            'batch_size': BATCH_SIZE,
+            'target_images_per_class': TARGET_IMAGES_PER_CLASS,
+            'total_epochs': len(history.history['accuracy']),
+            'training_time_seconds': training_time
+        },
+        'overall_metrics': {
+            'accuracy': float(accuracy),
+            'best_train_accuracy': float(max(history.history['accuracy'])),
+            'best_val_accuracy': float(max(history.history['val_accuracy'])),
+            'final_train_accuracy': float(history.history['accuracy'][-1]),
+            'final_val_accuracy': float(history.history['val_accuracy'][-1]),
+            'final_train_loss': float(history.history['loss'][-1]),
+            'final_val_loss': float(history.history['val_loss'][-1])
+        },
+        'per_class_metrics': {}
+    }
+    
+    # Add per-class metrics
+    for idx, emotion in enumerate(EMOTIONS):
+        report['per_class_metrics'][emotion] = {
+            'precision': float(precision[idx]),
+            'recall': float(recall[idx]),
+            'f1_score': float(f1[idx]),
+            'support': int(support[idx]),
+            'samples_percentage': float(support[idx] / len(y_true) * 100)
+        }
+    
+    # Save as JSON
+    with open(f'{save_path}/metrics_report.json', 'w') as f:
+        json.dump(report, f, indent=4)
+    print(f"Saved metrics report to {save_path}/metrics_report.json")
+    
+    # Save as readable text
+    with open(f'{save_path}/metrics_report.txt', 'w') as f:
+        f.write("="*20 + "\n")
+        f.write("EMOTION DETECTION MODEL - TRAINING REPORT\n")
+        f.write("="*20 + "\n\n")
+        
+        f.write(f"Generated: {report['timestamp']}\n")
+        f.write(f"Training Time: {training_time:.2f} seconds ({training_time/60:.2f} minutes)\n\n")
+        
+        f.write("CONFIGURATION\n")
+        f.write("-"*20 + "\n")
+        f.write(f"Image Size: {IMAGE_SIZE}\n")
+        f.write(f"Batch Size: {BATCH_SIZE}\n")
+        f.write(f"Total Epochs Trained: {len(history.history['accuracy'])}\n")
+        f.write(f"Target Images per Class: {TARGET_IMAGES_PER_CLASS}\n\n")
+        
+        f.write("OVERALL PERFORMANCE\n")
+        f.write("-"*20 + "\n")
+        f.write(f"Test Accuracy: {accuracy*100:.2f}%\n")
+        f.write(f"Best Training Accuracy: {report['overall_metrics']['best_train_accuracy']*100:.2f}%\n")
+        f.write(f"Best Validation Accuracy: {report['overall_metrics']['best_val_accuracy']*100:.2f}%\n")
+        f.write(f"Final Training Loss: {report['overall_metrics']['final_train_loss']:.4f}\n")
+        f.write(f"Final Validation Loss: {report['overall_metrics']['final_val_loss']:.4f}\n\n")
+        
+        f.write("PER-CLASS PERFORMANCE\n")
+        f.write("-"*20 + "\n")
+        f.write(f"{'Emotion':<12} {'Precision':<12} {'Recall':<12} {'F1-Score':<12} {'Support':<10}\n")
+        f.write("-"*20 + "\n")
+        
+        for emotion in EMOTIONS:
+            metrics = report['per_class_metrics'][emotion]
+            f.write(f"{emotion:<12} {metrics['precision']:<12.3f} {metrics['recall']:<12.3f} "
+                   f"{metrics['f1_score']:<12.3f} {metrics['support']:<10}\n")
+        
+        f.write("\n" + "="*20 + "\n")
+        f.write("CONFUSION MATRIX (Raw Counts)\n")
+        f.write("="*20 + "\n\n")
+        
+        # Print confusion matrix
+        f.write(f"{'':>12}")
+        for emotion in EMOTIONS:
+            f.write(f"{emotion[:8]:>10}")
+        f.write("\n")
+        
+        for i, emotion in enumerate(EMOTIONS):
+            f.write(f"{emotion:<12}")
+            for j in range(len(EMOTIONS)):
+                f.write(f"{cm[i][j]:>10}")
+            f.write("\n")
+    
+    print(f"Saved readable report to {save_path}/metrics_report.txt")
+
+
+def train_model():
+    """Train the emotion detection model with comprehensive metrics"""
+    import time
+    start_time = time.time()
+    
+    print("\n" + "="*70)
+    print("CUSTOM CNN EMOTION DETECTION TRAINING")
+    print("="*20)
+    print(f"Image size: {IMAGE_SIZE}")
+    print(f"Batch size: {BATCH_SIZE}")
+    print("Architecture: Custom CNN (proven for emotion detection)")
+    print("="*20 + "\n")
+    
     # Load dataset
     try:
-        print("Loading custom dataset...")
+        print("Loading dataset...")
         faces, emotions = load_custom_dataset(image_size=IMAGE_SIZE)
         print(f"\nTotal images loaded: {len(faces)}")
-
+        
         print("\nDataset distribution:")
         for idx, emotion in enumerate(EMOTIONS):
             count = np.sum(emotions == idx)
             print(f"  {emotion}: {count} images")
-
+    
     except Exception as e:
         print(f"\nError loading dataset: {e}")
         return
-
-    if len(faces) < 10:
+    
+    if len(faces) < 100:
         print("\nError: Not enough images!")
         return
-
-    # Split dataset
+    
+    # Split dataset (80/20)
     print("\nSplitting dataset (80% train, 20% validation)...")
     indices = np.random.permutation(len(faces))
     split = int(len(faces) * 0.8)
+    
     train_idx = indices[:split]
     val_idx = indices[split:]
     
     x_train, y_train = faces[train_idx], emotions[train_idx]
     x_val, y_val = faces[val_idx], emotions[val_idx]
-
-    # Convert to RGB
-    print("\nConverting grayscale to RGB...")
-    x_train = convert_grayscale_to_rgb(x_train)
-    x_val = convert_grayscale_to_rgb(x_val)
     
     print(f"Training samples: {len(x_train)}")
     print(f"Validation samples: {len(x_val)}")
-    print(f"Image shape: {x_train.shape[1:]}")
-
-    # Convert labels
+    
+    # Convert labels to categorical
     num_classes = len(EMOTIONS)
     y_train_cat = to_categorical(y_train, num_classes)
     y_val_cat = to_categorical(y_val, num_classes)
-
-    # Create generators (Python 3.13 compatible) - NO AUGMENTATION
-    train_gen = DataGenerator(x_train, y_train_cat, BATCH_SIZE, shuffle=True)
-    val_gen = DataGenerator(x_val, y_val_cat, BATCH_SIZE, shuffle=False)
-
+    
+    # Create data generators
+    print("\nCreating data generators with augmentation...")
+    train_gen = AugmentedDataGenerator(
+        x_train, y_train_cat, 
+        BATCH_SIZE, 
+        shuffle=True, 
+        augment=True
+    )
+    
+    val_gen = AugmentedDataGenerator(
+        x_val, y_val_cat,
+        BATCH_SIZE,
+        shuffle=False,
+        augment=False
+    )
+    
     # Create model
-    model, base_model = create_transfer_learning_model(
-        input_shape=(*IMAGE_SIZE, 3),
+    model = create_custom_cnn(
+        input_shape=(*IMAGE_SIZE, 1),
         num_classes=num_classes
     )
-
-    # PHASE 1: Train head with frozen base
-    print("=" * 70)
-    print("PHASE 1: Training Custom Head (Base Frozen)")
-    print("=" * 70)
-    print("Training only the new layers, EfficientNet stays frozen")
-    print("Expected: ~75-78% accuracy after this phase\n")
     
+    # Compile model
     model.compile(
-        optimizer=Adam(learning_rate=0.001),
+        optimizer=Adam(learning_rate=0.0003),
         loss='categorical_crossentropy',
         metrics=['accuracy']
     )
     
-    checkpoint1 = ModelCheckpoint(
-        './src/models/emotion_transfer_phase1.keras',
+    # Callbacks
+    checkpoint = ModelCheckpoint(
+        './src/models/emotion_model_finetuned.keras',
         monitor='val_accuracy',
         save_best_only=True,
         mode='max',
         verbose=1
     )
     
-    early_stopping1 = EarlyStopping(
+    early_stopping = EarlyStopping(
+        monitor='val_accuracy',
+        patience=15,
+        restore_best_weights=True,
+        verbose=1
+    )
+    
+    reduce_lr = ReduceLROnPlateau(
         monitor='val_loss',
+        factor=0.5,
         patience=5,
-        restore_best_weights=True,
-        verbose=1
-    )
-    
-    reduce_lr1 = ReduceLROnPlateau(
-        monitor='val_loss',
-        factor=0.5,
-        patience=3,
-        min_lr=1e-6,
-        verbose=1
-    )
-    
-    print("Starting Phase 1 training...\n")
-    history1 = model.fit(
-        train_gen,
-        validation_data=val_gen,
-        epochs=15,
-        callbacks=[checkpoint1, early_stopping1, reduce_lr1],
-        verbose=1
-    )
-    
-    best_val_acc_p1 = max(history1.history['val_accuracy'])
-    print(f"\n✓ Phase 1 Complete! Best validation accuracy: {best_val_acc_p1:.4f} ({best_val_acc_p1*100:.2f}%)\n")
-
-    # PHASE 2: Fine-tune base model
-    print("=" * 70)
-    print("PHASE 2: Fine-Tuning Base Model")
-    print("=" * 70)
-    print("Unfreezing top 30% of EfficientNet for fine-tuning")
-    print("Expected: ~80-85% accuracy after this phase\n")
-    
-    # Unfreeze top 30%
-    base_model.trainable = True
-    total_layers = len(base_model.layers)
-    freeze_until = int(total_layers * 0.7)
-    
-    for layer in base_model.layers[:freeze_until]:
-        layer.trainable = False
-    
-    trainable_layers = sum([1 for layer in base_model.layers if layer.trainable])
-    print(f"Unfrozen {trainable_layers}/{total_layers} base model layers\n")
-    
-    # Recompile with lower LR
-    model.compile(
-        optimizer=Adam(learning_rate=0.00001),
-        loss='categorical_crossentropy',
-        metrics=['accuracy']
-    )
-    
-    checkpoint2 = ModelCheckpoint(
-        FINETUNED_MODEL_PATH,
-        monitor='val_accuracy',
-        save_best_only=True,
-        mode='max',
-        verbose=1
-    )
-    
-    early_stopping2 = EarlyStopping(
-        monitor='val_loss',
-        patience=8,
-        restore_best_weights=True,
-        verbose=1
-    )
-    
-    reduce_lr2 = ReduceLROnPlateau(
-        monitor='val_loss',
-        factor=0.5,
-        patience=4,
         min_lr=1e-7,
         verbose=1
     )
     
-    print("Starting Phase 2 training...\n")
-    history2 = model.fit(
+    # Train
+    print("\n" + "="*20)
+    print("STARTING TRAINING")
+    print("="*20)
+    print("Expected: 50-70% accuracy after 20-40 epochs")
+    print("="*20 + "\n")
+    
+    history = model.fit(
         train_gen,
         validation_data=val_gen,
-        epochs=25,
-        callbacks=[checkpoint2, early_stopping2, reduce_lr2],
+        epochs=50,
+        callbacks=[checkpoint, early_stopping, reduce_lr],
         verbose=1
     )
     
-    best_val_acc_p2 = max(history2.history['val_accuracy'])
-    print(f"\n✓ Phase 2 Complete! Best validation accuracy: {best_val_acc_p2:.4f} ({best_val_acc_p2*100:.2f}%)")
+    training_time = time.time() - start_time
     
-    # Final results
-    print("\n" + "=" * 70)
-    print("TRANSFER LEARNING TRAINING COMPLETE!")
-    print("=" * 70)
-    print(f"Final model saved to: {FINETUNED_MODEL_PATH}")
-    print(f"\nPhase 1 Best Accuracy: {best_val_acc_p1:.4f} ({best_val_acc_p1*100:.2f}%)")
-    print(f"Phase 2 Best Accuracy: {best_val_acc_p2:.4f} ({best_val_acc_p2*100:.2f}%)")
-    print(f"Total Improvement: +{(best_val_acc_p2 - 0.70) * 100:.2f} percentage points from baseline")
-    print("\nThis model uses RGB images at 96x96 resolution.")
-    print("Make sure your inference code handles RGB conversion!")
+    # Evaluate on validation set
+    print("\n" + "="*20)
+    print("GENERATING PREDICTIONS AND METRICS")
+    print("="*20 + "\n")
+    
+    # Get predictions
+    y_pred_probs = model.predict(val_gen)
+    y_pred = np.argmax(y_pred_probs, axis=1)
+    y_true = y_val[:len(y_pred)]  # Ensure same length
+    
+    # Generate all plots and metrics
+    print("\nGenerating visualizations...")
+    plot_training_history(history)
+    cm = plot_confusion_matrix(y_true, y_pred)
+    precision, recall, f1, support = plot_per_class_metrics(y_true, y_pred)
+    
+    # Save comprehensive report
+    save_metrics_report(history, y_true, y_pred, cm, precision, recall, f1, 
+                       support, training_time)
+    
+    # Print summary
+    best_val_acc = max(history.history['val_accuracy'])
+    best_train_acc = max(history.history['accuracy'])
+    test_accuracy = np.mean(y_true == y_pred)
+    
+    print("\n" + "="*20)
+    print("TRAINING COMPLETE!")
+    print("="*20)
+    print(f"Training Time: {training_time:.2f}s ({training_time/60:.2f} min)")
+    print(f"Best Training Accuracy: {best_train_acc:.4f} ({best_train_acc*100:.2f}%)")
+    print(f"Best Validation Accuracy: {best_val_acc:.4f} ({best_val_acc*100:.2f}%)")
+    print(f"Test Accuracy: {test_accuracy:.4f} ({test_accuracy*100:.2f}%)")
+    print(f"\nModel saved to: ./src/models/emotion_model_finetuned.keras")
+    print(f"Results saved to: ./training_results/")
+    print("="*20)
+    
+    return model, history
 
-def main():
-    print("\n" + "=" * 70)
-    print("TRANSFER LEARNING - EMOTION DETECTION TRAINING")
-    print("=" * 70)
-    print("\nUsing EfficientNetB0 pre-trained on ImageNet")
-    print("GPU-accelerated training (if available)")
-    print("No augmentation - dataset already augmented")
-    print("Expected accuracy: 80-85%")
-    print("=" * 70 + "\n")
-    
-    train_transfer_learning_model()
 
 if __name__ == "__main__":
-    main()
+    train_model()

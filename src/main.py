@@ -10,15 +10,15 @@ def check_finetuned_model_exists():
 
 def main():
     while True:
-        print("\n" + "="*50)
+        print("\n" + "="*20)
         print("       EMOTION DETECTION SYSTEM")
-        print("="*50)
+        print("="*20)
         print("\n==== Main Menu ====")
         print("1. Run Emotion Detection (Original Model)")
         print("2. Run Emotion Detection (Fine-tuned Model)")
         print("3. Train/Fine-tune Model")
         print("0. Exit")
-        print("\n" + "-"*50)
+        print("\n" + "-"*20)
         
         # Check if fine-tuned model exists
         has_finetuned = check_finetuned_model_exists()
@@ -26,7 +26,7 @@ def main():
             print("Fine-tuned model detected")
         else:
             print("No fine-tuned model found (use option 3 to train)")
-        print("-"*50)
+        print("-"*20)
         
         choice = input("\nSelect an option: ").strip()
         
@@ -56,7 +56,7 @@ def main():
         
         elif choice == '3':
             print("\nStarting model training...")
-            print("-"*50)
+            print("-"*20)
             try:
                 import subprocess
                 result = subprocess.run([sys.executable, 'src/trained_emotions.py'])
